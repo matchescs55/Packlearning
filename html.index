@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spell Chomp</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap">
+<style>
+:root{--bg:#e8e2cf;--fg:#26302b;--dim:#8b907f;--ok:#2f7d4f;--hot:#a06a00;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1512;--fg:#e9e4d3;--dim:#6f7a70;--ok:#6fd39a;--hot:#f2d15c}}
+:root[data-theme="dark"]{--bg:#0f1512;--fg:#e9e4d3;--dim:#6f7a70;--ok:#6fd39a;--hot:#f2d15c}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:"Patrick Hand","Chalkboard SE","Comic Sans MS",ui-rounded,system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;overflow:hidden;user-select:none;-webkit-user-select:none}
+#hud{width:min(680px,100%);box-sizing:border-box;padding:8px 14px 4px}
+.row{display:flex;justify-content:space-between;font-size:20px}
+#lv{color:#e5484d;letter-spacing:2px}
+#sent{font-size:clamp(20px,5vw,28px);text-align:center;margin-top:2px;min-height:62px}.tn{font-size:16px;color:var(--dim)}
+#sent span{margin:0 4px}
+.d{color:var(--ok)}.n{color:var(--hot);border-bottom:3px solid var(--hot)}.t{color:var(--dim)}
+#stage{flex:1;min-height:0;width:100%;display:flex;align-items:center;justify-content:center;position:relative;touch-action:none}
+canvas{display:block;border-radius:14px}
+#ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(15,21,18,.92);color:#e9e4d3;text-align:center;padding:16px}
+#ov div{max-width:430px}
+h1{font-size:46px;margin:0 0 8px;font-weight:400}
+#ov p{font-size:20px;line-height:1.35;margin:0 0 18px}
+button{font:inherit;font-size:24px;padding:10px 30px;background:#f2d15c;color:#1c2824;border:0;border-radius:10px;cursor:pointer}
+button:focus-visible{outline:3px solid #fff;outline-offset:3px}
+.bad{color:#ff7b7b}.good{color:#9be3b5}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="row"><span>Score <b id="sc">0</b></span><span id="lv"></span><span>Best <b id="hs">0</b></span></div>
+  <div id="sent"></div>
+</div>
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="ov"><div id="ovb"></div></div>
+</div>
+<script>
+const M=["#################","#...............#","#.##.###.###.##.#","#...............#","#.#.#.#####.#.#.#","#...............#","#.##.#.....#.##.#","#...............#","#.##.#.....#.##.#","#...............#","#.#.#.#####.#.#.#","#...............#","#.##.###.###.##.#","#...............#","#################"];
+const C=17,R=15,T=40,W=C*T,H=R*T,FONT='"Patrick Hand","Chalkboard SE","Comic Sans MS",system-ui,sans-serif';
+const SENT=[["Past simple","she went to school yesterday"],["Present perfect","I have seen that film"],["Future simple","we will travel next year"],["Present continuous","they are playing outside now"],["Past continuous","he was cooking when I arrived"],["Past perfect","she had left before noon"],["Present simple","birds fly south in winter"],["Future perfect","we will have finished by noon"]].map(([t,s])=>({t,w:s.split(" ")}));
+const TYPOS=[["goed","went"],["has went","has gone"],["buyed","bought"],["runned","ran"],["I seen","I saw"],["will goes","will go"],["he don’t","he doesn’t"],["have ate","have eaten"],["swimmed","swam"],["teached","taught"]];
+const cv=document.getElementById("cv"),g=cv.getContext("2d");cv.width=W*2;cv.height=H*2;
+const $=id=>document.getElementById(id);
+let best=0;try{best=+localStorage.getItem("spellchomp_best")||0}catch(e){}
+let state="menu",score=0,lives=3,cleared=0,ord=[],si=0,wi=0,dots=[],dotsLeft=0,tokens=[],G=[],pl,want=null,time=0,deadT=0,msg="",msgT=0;
+
+const open=(c,r)=>M[r]!==undefined&&M[r][c]!==undefined&&M[r][c]!=="#";
+const mk=(tx,ty,sp)=>({tx,ty,nx:tx,ny:ty,p:0,dx:0,dy:0,sp});
+const pos=e=>({x:e.tx+(e.nx-e.tx)*e.p+.5,y:e.ty+(e.ny-e.ty)*e.p+.5});
+const cur=()=>SENT[ord[Math.floor(cleared/3)%ord.length]];
+const mode=()=>cleared%3;
+const shown=i=>mode()===0||(mode()===1&&i<Math.ceil(cur().w.length/2));
+const rt=()=>TYPOS[Math.floor(Math.random()*TYPOS.length)];
+const say=m=>{msg=m;msgT=1.6};
+
+function step(e,dt,pick,arr){
+  let d=e.sp*dt;
+  while(d>0){
+    if(e.tx===e.nx&&e.ty===e.ny){pick(e);if(e.tx===e.nx&&e.ty===e.ny)return}
+    const r=1-e.p;
+    if(d<r){e.p+=d;return}
+    d-=r;e.tx=e.nx;e.ty=e.ny;e.p=0;arr&&arr(e);
+  }
+}
+function pPick(e){
+  if(want&&open(e.tx+want.x,e.ty+want.y)){e.dx=want.x;e.dy=want.y}
+  else if(!(e.dx||e.dy)||!open(e.tx+e.dx,e.ty+e.dy)){e.dx=e.dy=0;return}
+  e.nx=e.tx+e.dx;e.ny=e.ty+e.dy;e.face=Math.atan2(e.dy,e.dx);
+}
+function gPick(e){
+  const o=[[1,0],[-1,0],[0,1],[0,-1]].filter(v=>open(e.tx+v[0],e.ty+v[1])&&!(v[0]===-e.dx&&v[1]===-e.dy));
+  const L=o.length?o:[[-e.dx,-e.dy]];
+  let ch;
+  if(e.fr>0||(!(e.ang>0)&&Math.random()<[.1,.25,.4][e.i])) ch=L[Math.floor(Math.random()*L.length)];
+  else{
+    const ax=e.i===1?pl.tx+pl.dx*3:pl.tx,ay=e.i===1?pl.ty+pl.dy*3:pl.ty;
+    ch=L.reduce((b,v)=>{const d=Math.hypot(e.tx+v[0]-ax,e.ty+v[1]-ay);return d<b.d?{v,d}:b},{d:1e9}).v;
+  }
+  e.dx=ch[0];e.dy=ch[1];e.nx=e.tx+ch[0];e.ny=e.ty+ch[1];
+}
+
+function initDots(){
+  dots=M.map(row=>[...row].map(ch=>ch==="#"?0:1));
+  [[1,1],[15,1],[1,13],[15,13]].forEach(([c,r])=>dots[r][c]=2);
+  dots[11][8]=0;[7,8,9].forEach(c=>dots[7][c]=0);
+  dotsLeft=dots.flat().filter(Boolean).length;
+}
+function freeCell(){
+  let c,r,n=0;
+  do{c=1+Math.floor(Math.random()*(C-2));r=1+Math.floor(Math.random()*(R-2));n++}
+  while((M[r][c]==="#"||tokens.some(t=>t.c===c&&t.r===r)||Math.abs(c-pl.tx)+Math.abs(r-pl.ty)<4)&&n<500);
+  return[c,r];
+}
+function spawn(){tokens=[];cur().w.forEach(w=>{const[c,r]=freeCell();tokens.push({w,c,r})})}
+function mkGhost(i){return Object.assign(mk(7+i,7,3),{i,wait:1+i*2.5,fr:0,ang:0,t:rt()})}
+function resetPos(){pl=mk(8,11,4.4);pl.face=-Math.PI/2;want=null;G=[0,1,2].map(mkGhost)}
+
+function hud(){
+  $("sc").textContent=score;$("hs").textContent=Math.max(best,score);
+  $("lv").textContent="♥".repeat(Math.max(lives,0));
+  $("sent").innerHTML=`<div class="tn">${cur().t}, round ${mode()+1} of 3 (${["full sentence","half hint","no hint"][mode()]}, x${mode()+1} points)</div>`+cur().w.map((w,i)=>(i<wi||shown(i))?`<span class="${i<wi?"d":i===wi?"n":"t"}">${w}</span>`:`<span class="${i===wi?"n":"t"}">___</span>`).join(" ");
+}
+function collect(k){
+  if(k.w===cur().w[wi]){
+    const mu=mode()+1;tokens.splice(tokens.indexOf(k),1);wi++;score+=100*mu;
+    if(wi>=cur().w.length){score+=500*mu;cleared++;wi=0;spawn();say("Sentence complete! +"+500*mu+(cleared%3?" Next: round "+(cleared%3+1)+" of 3":" New sentence"))}
+    else say("+"+100*mu);
+  }else{
+    score=Math.max(0,score-50);[k.c,k.r]=freeCell();G.forEach(q=>{q.ang=4;q.fr=0});say("Wrong order −50. Ghosts are angry!");
+  }
+}
+function onArrive(e){
+  const c=e.tx,r=e.ty,d=dots[r][c];
+  if(d){
+    if(d===2){score+=50;G.forEach(q=>q.fr=7);say("Spell-check! Ghosts now show your next word")}else score+=10;
+    dots[r][c]=0;if(--dotsLeft<=0)initDots();
+  }
+  const k=tokens.find(t=>t.c===c&&t.r===r);if(k)collect(k);
+  hud();
+}
+function die(){lives--;state="dead";deadT=1.2;hud()}
+function endGame(){
+  state="over";
+  if(score>best){best=score;try{localStorage.setItem("spellchomp_best",best)}catch(e){}}
+  show("Marked wrong","Final score "+score+". Best "+best+". You cleared "+cleared+(cleared===1?" sentence.":" sentences."),"Try again");
+}
+function show(h,p,b){
+  $("ovb").innerHTML=`<h1>${h}</h1><p>${p}</p><button id="go">${b}</button>`;
+  $("ov").style.display="flex";$("go").onclick=start;$("go").focus();
+}
+function start(){
+  ord=SENT.map((_,i)=>i).sort(()=>Math.random()-.5);
+  score=0;lives=3;cleared=0;si=0;wi=0;time=0;msgT=0;
+  initDots();resetPos();spawn();hud();state="play";$("ov").style.display="none";
+}
+
+function update(dt){
+  time+=dt;if(msgT>0)msgT-=dt;
+  if(state==="dead"){deadT-=dt;if(deadT<=0){if(lives<=0)endGame();else{resetPos();state="play"}}return}
+  if(state!=="play")return;
+  if(want&&(pl.tx!==pl.nx||pl.ty!==pl.ny)&&pl.dx===-want.x&&pl.dy===-want.y){
+    [pl.tx,pl.nx]=[pl.nx,pl.tx];[pl.ty,pl.ny]=[pl.ny,pl.ty];pl.p=1-pl.p;pl.dx=want.x;pl.dy=want.y;pl.face=Math.atan2(pl.dy,pl.dx);
+  }
+  step(pl,dt,pPick,onArrive);
+  const base=Math.min(3+.12*cleared,4);
+  for(const gh of G){
+    if(gh.wait>0){gh.wait-=dt;continue}
+    if(gh.fr>0)gh.fr-=dt;
+    if(gh.ang>0)gh.ang-=dt;gh.sp=gh.fr>0?2.2:base*(gh.ang>0?1.3:1);
+    step(gh,dt,gPick);
+  }
+  const a=pos(pl);
+  for(const gh of G){
+    if(gh.wait>0)continue;
+    const b=pos(gh);
+    if(Math.hypot(a.x-b.x,a.y-b.y)<.6){
+      if(gh.fr>0){const fw=cur().w[wi],k=tokens.find(t=>t.w===fw);score+=200;if(k)collect(k);say("Ghost gave you “"+fw+"”! +200");G[gh.i]=Object.assign(mkGhost(gh.i),{wait:3});hud()}
+      else{die();break}
+    }
+  }
+}
+
+function rr(x,y,w,h,r){g.beginPath();g.roundRect?g.roundRect(x,y,w,h,r):g.rect(x,y,w,h)}
+function label(txt,cx,y,col,wavy){
+  g.font="bold 15px "+FONT;g.textAlign="center";g.textBaseline="alphabetic";
+  const w=g.measureText(txt).width;g.fillStyle=col;g.fillText(txt,cx,y);
+  if(wavy){g.strokeStyle=col;g.lineWidth=1.5;g.beginPath();
+    for(let i=0;i<=w;i+=3){const yy=y+4+((i/3)%2?2:0);i?g.lineTo(cx-w/2+i,yy):g.moveTo(cx-w/2,yy)}g.stroke()}
+}
+function ghost(gh){
+  const q=pos(gh),gx=q.x*T,gy=q.y*T,fr=gh.fr>0;
+  g.globalAlpha=gh.wait>0?.35:1;
+  g.fillStyle=fr?((gh.fr<2&&Math.floor(time*6)%2)?"#fff":"#5b8def"):(gh.ang>0?"#9b4dff":"#e5484d");
+  g.beginPath();g.arc(gx,gy-2,14,Math.PI,0);g.lineTo(gx+14,gy+14);g.lineTo(gx+7,gy+9);g.lineTo(gx,gy+14);g.lineTo(gx-7,gy+9);g.lineTo(gx-14,gy+14);g.closePath();g.fill();
+  [-5,5].forEach(o=>{g.fillStyle="#fff";g.beginPath();g.arc(gx+o,gy-4,4,0,7);g.fill();g.fillStyle="#1c2824";g.beginPath();g.arc(gx+o+gh.dx*2,gy-4+gh.dy*2,2,0,7);g.fill()});
+  if(gh.ang>0){g.strokeStyle="#1c2824";g.lineWidth=2.5;g.beginPath();g.moveTo(gx-10,gy-12);g.lineTo(gx-2,gy-8);g.moveTo(gx+10,gy-12);g.lineTo(gx+2,gy-8);g.stroke()}label(fr?cur().w[wi]:gh.t[0],gx,gy-20,fr?"#9be3b5":(gh.ang>0?"#c79bff":"#ff7b7b"),!fr);
+  g.globalAlpha=1;
+}
+function draw(){
+  g.setTransform(2,0,0,2,0,0);
+  g.fillStyle="#1c2824";g.fillRect(0,0,W,H);
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    if(M[r][c]==="#"){g.fillStyle="#36544a";rr(c*T+2,r*T+2,T-4,T-4,8);g.fill()}
+    else{
+      const d=dots[r]&&dots[r][c];
+      if(d===1){g.fillStyle="rgba(233,228,211,.7)";g.beginPath();g.arc(c*T+20,r*T+20,3,0,7);g.fill()}
+      if(d===2){g.fillStyle="#6fd39a";g.beginPath();g.arc(c*T+20,r*T+20,11+Math.sin(time*5)*1.5,0,7);g.fill();
+        g.fillStyle="#1c2824";g.font="bold 16px "+FONT;g.textAlign="center";g.textBaseline="middle";g.fillText("✓",c*T+20,r*T+21)}
+    }
+  }
+  const want_=(state==="play"||state==="dead")&&shown(wi)?cur().w[wi]:null;
+  g.font="bold 16px "+FONT;g.textAlign="center";g.textBaseline="middle";
+  for(const k of tokens){
+    const w=g.measureText(k.w).width+16,x=k.c*T+20-w/2,y=k.r*T+20-12;
+    rr(x,y,w,24,8);g.fillStyle="#efe8d4";g.fill();
+    if(k.w===want_){g.strokeStyle="#f2d15c";g.lineWidth=2.5+Math.sin(time*6);g.stroke()}
+    g.fillStyle="#26302b";g.fillText(k.w,k.c*T+20,k.r*T+21);
+  }
+  if(pl){
+    G.forEach(ghost);
+    const q=pos(pl);
+    const m=state==="dead"?Math.PI*(1-Math.max(deadT,0)/1.2):((pl.dx||pl.dy)?.12+.3*Math.abs(Math.sin(time*14)):.25);
+    g.fillStyle="#f2d15c";g.beginPath();g.moveTo(q.x*T,q.y*T);g.arc(q.x*T,q.y*T,15,pl.face+m,pl.face-m+Math.PI*2);g.closePath();g.fill();
+  }
+  if(msgT>0){g.globalAlpha=Math.min(1,msgT*2);g.fillStyle="#efe8d4";g.font="bold 22px "+FONT;g.textAlign="center";g.textBaseline="middle";g.fillText(msg,W/2,20);g.globalAlpha=1}
+}
+
+const K={arrowleft:[-1,0],a:[-1,0],arrowright:[1,0],d:[1,0],arrowup:[0,-1],w:[0,-1],arrowdown:[0,1],s:[0,1]};
+addEventListener("keydown",e=>{const k=K[e.key.toLowerCase()];if(k){want={x:k[0],y:k[1]};e.preventDefault()}});
+let sx=0,sy=0;const st=$("stage");
+st.addEventListener("touchstart",e=>{sx=e.changedTouches[0].clientX;sy=e.changedTouches[0].clientY},{passive:true});
+st.addEventListener("touchend",e=>{
+  const dx=e.changedTouches[0].clientX-sx,dy=e.changedTouches[0].clientY-sy;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<24)return;
+  want=Math.abs(dx)>Math.abs(dy)?{x:Math.sign(dx),y:0}:{x:0,y:Math.sign(dy)};
+},{passive:true});
+function fit(){const k=Math.min(st.clientWidth/W,st.clientHeight/H);cv.style.width=W*k+"px";cv.style.height=H*k+"px"}
+addEventListener("resize",fit);
+
+ord=SENT.map((_,i)=>i);initDots();resetPos();spawn();hud();fit();
+show("Spell Chomp","Chomp the words of each sentence in order to practice English tenses. You get each sentence three times: in full, with half hidden, then with no hint, and later rounds score more. Red ghosts are tense mistakes. Grab a green ✓ and they turn into the next word of your sentence: eat one to add that word. Touch a wrong word and they turn purple, angry and faster for a few seconds. Steer with arrow keys, WASD or a swipe.","Start");
+let last=0;
+(function loop(ts){const dt=Math.min((ts-last)/1000||0,.05);last=ts;update(dt);draw();requestAnimationFrame(loop)})(0);
+</script>
+</body>
+</html>
